@@ -1,0 +1,178 @@
+#include <Servo.h>
+
+Servo servoTri;      
+Servo servoCouvercle; 
+
+const int PIN_TRIG = 2;   
+const int PIN_ECHO = 3;   
+const int PIN_RELAIS = 4; 
+
+const int RELAIS_ACTIF = LOW;    
+const int RELAIS_INACTIF = HIGH; 
+
+// --- COUVERCLE 360° ---
+const int Vitesse_ARRET = 90;   
+const int Vitesse_OUVRIR = 60;  
+const int Vitesse_FERMER = 120; 
+const unsigned long TEMPS_MONTEE = 600;    
+const unsigned long TEMPS_DESCENTE = 590;  
+
+// --- BRAS DE TRI ---
+const int ANGLE_NEUTRE = 90; 
+const int ANGLE_ROUGE = 0; 
+const int ANGLE_BLEU = 50; 
+
+const int DISTANCE_SEUIL = 40;                        
+const unsigned long TEMPS_OUVERTURE_COUVERCLE = 5800; 
+const unsigned long TEMPS_TAPIS_TOTAL = 6000;         
+const unsigned long TEMPS_MAINTIEN_BRAS = 2500;       
+
+enum EtatCouvercle { REPOS, OUVERTURE, MAINTIEN_OUVERT, FERMETURE };
+EtatCouvercle etatActuelCouvercle = REPOS;
+
+unsigned long chronoCouvercle = 0;
+bool tapisEnMarche = false;
+unsigned long tempsDebutTapis = 0;
+
+char commandeEnAttente = 'N'; 
+bool triEnCours = false;
+unsigned long tempsDebutTri = 0;
+
+unsigned long precedentChronoUltrason = 0;
+const long INTERVALLE_ULTRASON = 60; 
+
+int distanceActuelle = 999; 
+unsigned long chronoAffichage = 0; // Pour ne pas saturer le moniteur
+
+void setup() {
+  Serial.begin(9600); 
+  pinMode(PIN_TRIG, OUTPUT);
+  pinMode(PIN_ECHO, INPUT);
+  pinMode(PIN_RELAIS, OUTPUT);
+  pinMode(13, OUTPUT); 
+
+  digitalWrite(PIN_RELAIS, RELAIS_INACTIF);
+
+  servoCouvercle.attach(11);
+  servoCouvercle.write(Vitesse_ARRET);
+
+  servoTri.attach(9);
+  servoTri.write(ANGLE_NEUTRE);
+  delay(500); 
+  servoTri.detach(); 
+
+  digitalWrite(13, LOW);
+  Serial.println("--- DEMARRAGE DU SYSTEME ---");
+}
+
+void loop() {
+  unsigned long tempsActuel = millis();
+
+  // 1. LECTURE ULTRASON
+  if (tempsActuel - precedentChronoUltrason >= INTERVALLE_ULTRASON) {
+    precedentChronoUltrason = tempsActuel;
+    digitalWrite(PIN_TRIG, LOW);
+    delayMicroseconds(2);
+    digitalWrite(PIN_TRIG, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(PIN_TRIG, LOW);
+    long duree = pulseIn(PIN_ECHO, HIGH, 20000); 
+    
+    if (duree > 0) {
+      distanceActuelle = duree * 0.034 / 2;
+    } else {
+      distanceActuelle = 999; 
+    }
+  }
+
+  // AFFICHAGE DE DIAGNOSTIC (Toutes les 500 ms)
+  if (tempsActuel - chronoAffichage >= 500) {
+    chronoAffichage = tempsActuel;
+    Serial.print("Distance lue : ");
+    Serial.print(distanceActuelle);
+    Serial.println(" cm");
+  }
+
+  bool obstaclePresent = (distanceActuelle > 2 && distanceActuelle <= DISTANCE_SEUIL);
+
+  // 2. LECTURE ESP32-CAM
+  if (Serial.available() > 0) {
+    char commande = Serial.read();
+    if (commande == 'R' || commande == 'B') {
+      commandeEnAttente = commande; 
+      digitalWrite(13, HIGH);       
+      Serial.print("-> Ordre ESP32-CAM recu : "); Serial.println(commandeEnAttente);
+    }
+  }
+
+  // 3. COUVERCLE
+  switch (etatActuelCouvercle) {
+    case REPOS:
+      if (obstaclePresent && !tapisEnMarche) {
+        Serial.println(">>> ORDRE ENVOYE : OUVERTURE COUVERCLE ! <<<");
+        servoCouvercle.write(Vitesse_OUVRIR);
+        chronoCouvercle = tempsActuel;
+        etatActuelCouvercle = OUVERTURE;
+      }
+      break;
+
+    case OUVERTURE:
+      if (tempsActuel - chronoCouvercle >= TEMPS_MONTEE) {
+        servoCouvercle.write(Vitesse_ARRET);
+        chronoCouvercle = tempsActuel;
+        etatActuelCouvercle = MAINTIEN_OUVERT;
+      }
+      break;
+
+    case MAINTIEN_OUVERT:
+      if (tempsActuel - chronoCouvercle >= TEMPS_OUVERTURE_COUVERCLE) {
+        Serial.println(">>> ORDRE ENVOYE : FERMETURE COUVERCLE ! <<<");
+        servoCouvercle.write(Vitesse_FERMER);
+        chronoCouvercle = tempsActuel;
+        etatActuelCouvercle = FERMETURE;
+      }
+      break;
+
+    case FERMETURE:
+      if (tempsActuel - chronoCouvercle >= TEMPS_DESCENTE) {
+        servoCouvercle.write(Vitesse_ARRET);
+        digitalWrite(PIN_RELAIS, RELAIS_ACTIF);
+        Serial.println("-> STATUT : Tapis en marche");
+        tapisEnMarche = true;
+        tempsDebutTapis = tempsActuel;
+        etatActuelCouvercle = REPOS; 
+      }
+      break;
+  }
+
+  // 4. TRI
+  if (commandeEnAttente != 'N' && !triEnCours && etatActuelCouvercle == REPOS) {
+    servoTri.attach(9); 
+    if (commandeEnAttente == 'R') {
+      servoTri.write(ANGLE_ROUGE);
+    } else if (commandeEnAttente == 'B') {
+      servoTri.write(ANGLE_BLEU);
+    }
+    Serial.print("-> Bras de tri actionne : "); Serial.println(commandeEnAttente);
+    triEnCours = true;
+    tempsDebutTri = tempsActuel;
+    commandeEnAttente = 'N'; 
+  }
+
+  // 5. NEUTRE TRI
+  if (triEnCours && (tempsActuel - tempsDebutTri >= TEMPS_MAINTIEN_BRAS)) {
+    servoTri.write(ANGLE_NEUTRE);
+    delay(500);         
+    servoTri.detach();  
+    triEnCours = false;
+    digitalWrite(13, LOW); 
+    Serial.println("-> Bras de tri remis a OFF.");
+  }
+
+  // 6. ARRET TAPIS
+  if (tapisEnMarche && (tempsActuel - tempsDebutTapis >= TEMPS_TAPIS_TOTAL)) {
+    digitalWrite(PIN_RELAIS, RELAIS_INACTIF);
+    Serial.println("-> STATUT : Tapis arrete");
+    tapisEnMarche = false;
+  }
+}
