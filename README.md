@@ -1,2 +1,1 @@
-# smartbin-code
-Code de traitement d'image (OpenCV) optimisé pour le tri automatique de la SmartBin. Analyse le flux de l'ESP32-CAM via requêtes HTTP, filtre les couleurs (masques HSV rouge/bleu), gère un compteur persistant (JSON) et envoie des commandes instantanées à l'Arduino (COM9) avec un délai anti-rebond calibré à 4,5s.
+Prototype de tri sélectif automatisé développé en équipe. Une ESP32-CAM diffuse le flux vidéo en local, un script Python (OpenCV) analyse la couleur des déchets en temps réel pour gérer les compteurs, et une carte Arduino gère les composants physiques : détection par ultrason, ouverture du couvercle, tapis roulant et orientation du bras de tri.
